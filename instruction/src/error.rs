@@ -67,13 +67,28 @@ pub enum InstructionError {
     GenericError,
 
     /// The arguments provided to a program were invalid
-    InvalidArgument,
+    InvalidArgument {
+        /// Index of the invalid argument in the instruction data
+        arg_index: usize,
+        /// Description of the expected argument value or format
+        expected: String,
+        /// The actual argument value provided
+        actual: String,
+    },
 
     /// An instruction's data contents were invalid
-    InvalidInstructionData,
+    InvalidInstructionData {
+        /// Name or identifier of the instruction that failed
+        instruction: String,
+        /// Byte offset in the instruction data where the error occurred
+        data_offset: usize,
+    },
 
     /// An account's data contents was invalid
-    InvalidAccountData,
+    InvalidAccountData {
+        /// Index of the invalid account in the account slice
+        account_index: usize,
+    },
 
     /// An account's data was too small
     AccountDataTooSmall,
@@ -250,10 +265,29 @@ impl fmt::Display for InstructionError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             InstructionError::GenericError => f.write_str("generic instruction error"),
-            InstructionError::InvalidArgument => f.write_str("invalid program argument"),
-            InstructionError::InvalidInstructionData => f.write_str("invalid instruction data"),
-            InstructionError::InvalidAccountData => {
-                f.write_str("invalid account data for instruction")
+            InstructionError::InvalidArgument { arg_index, expected, actual } => {
+                write!(
+                    f,
+                    "invalid program argument at index {}: expected '{}' , got '{}'",
+                    arg_index,
+                    expected,
+                    actual
+                )
+            }
+            InstructionError::InvalidInstructionData { instruction, data_offset } => {
+                write!(
+                    f,
+                    "invalid instruction data for '{}': error at byte offset {}",
+                    instruction,
+                    data_offset
+                )
+            }
+            InstructionError::InvalidAccountData { account_index } => {
+                write!(
+                    f,
+                    "invalid account data at account index {}",
+                    account_index
+                )
             }
             InstructionError::AccountDataTooSmall => {
                 f.write_str("account data too small for instruction")
@@ -394,9 +428,18 @@ where
         let error = error.to_u64().unwrap_or(0xbad_c0de);
         match error {
             CUSTOM_ZERO => Self::Custom(0),
-            INVALID_ARGUMENT => Self::InvalidArgument,
-            INVALID_INSTRUCTION_DATA => Self::InvalidInstructionData,
-            INVALID_ACCOUNT_DATA => Self::InvalidAccountData,
+            INVALID_ARGUMENT => Self::InvalidArgument {
+                arg_index: 0,
+                expected: String::new(),
+                actual: String::new(),
+            },
+            INVALID_INSTRUCTION_DATA => Self::InvalidInstructionData {
+                instruction: String::new(),
+                data_offset: 0,
+            },
+            INVALID_ACCOUNT_DATA => Self::InvalidAccountData {
+                account_index: 0,
+            },
             ACCOUNT_DATA_TOO_SMALL => Self::AccountDataTooSmall,
             INSUFFICIENT_FUNDS => Self::InsufficientFunds,
             INCORRECT_PROGRAM_ID => Self::IncorrectProgramId,
@@ -461,4 +504,68 @@ impl From<LamportsError> for InstructionError {
             LamportsError::ArithmeticUnderflow => InstructionError::ArithmeticOverflow,
         }
     }
+}
+
+#[cfg(feature = "std")]
+impl InstructionError {
+    /// Given a decoded `InvalidArgument` with placeholders, fill in
+    /// the real index, expected format, and actual value.
+    pub fn with_invalid_arg_context(
+        self,
+        arg_index: usize,
+        expected: impl Into<String>,
+        actual: impl Into<String>,
+    ) -> Self {
+        match self {
+            InstructionError::InvalidArgument { .. } => InstructionError::InvalidArgument {
+                arg_index,
+                expected: expected.into(),
+                actual: actual.into(),
+            },
+            other => other,
+        }
+    }
+
+    /// Populate the simplified `InvalidInstructionData` fields with real context.
+    pub fn with_invalid_instruction_data_context(
+        self,
+        instruction: impl Into<String>,
+        data_offset: usize,
+    ) -> Self {
+        match self {
+            InstructionError::InvalidInstructionData { .. } => InstructionError::InvalidInstructionData {
+                instruction: instruction.into(),
+                data_offset,
+            },
+            other => other,
+        }
+    }
+
+    /// Populate the simplified `InvalidInstructionData` fields with real context
+    /// and compute `data_offset` from the full data and remaining slice.
+    pub fn invalid_instruction_data_from_slices(
+        instruction: impl Into<String>,
+        full_data: &[u8],
+        remaining: &[u8],
+    ) -> Self {
+        let offset = full_data.len().saturating_sub(remaining.len());
+        InstructionError::InvalidInstructionData {
+            instruction: instruction.into(),
+            data_offset: offset,
+        }
+    }
+
+    /// Populate the `InvalidAccountData` field with real context.
+    pub fn with_invalid_account_data_context(
+        self,
+        account_index: usize,
+    ) -> Self {
+        match self {
+            InstructionError::InvalidAccountData { .. } => InstructionError::InvalidAccountData {
+                account_index,
+            },
+            other => other,
+        }
+    }
+
 }
