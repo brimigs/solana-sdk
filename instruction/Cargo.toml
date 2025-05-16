@@ -34,6 +34,7 @@ solana-instruction = { path = ".", features = ["borsh"] }
 bincode = ["dep:bincode", "dep:serde"]
 borsh = ["dep:borsh"]
 default = ["std"]
+detailed-errors = ["std"]
 frozen-abi = [
     "dep:solana-frozen-abi",
     "dep:solana-frozen-abi-macro",

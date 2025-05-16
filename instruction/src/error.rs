@@ -6,6 +6,7 @@ use {
     num_traits::ToPrimitive,
     std::string::{String, ToString},
 };
+use solana_pubkey::Pubkey;
 
 /// Builtin return values occupy the upper 32 bits
 const BUILTIN_BIT_SHIFT: usize = 32;
@@ -67,28 +68,13 @@ pub enum InstructionError {
     GenericError,
 
     /// The arguments provided to a program were invalid
-    InvalidArgument {
-        /// Index of the invalid argument in the instruction data
-        arg_index: usize,
-        /// Description of the expected argument value or format
-        expected: String,
-        /// The actual argument value provided
-        actual: String,
-    },
+    InvalidArgument,
 
     /// An instruction's data contents were invalid
-    InvalidInstructionData {
-        /// Name or identifier of the instruction that failed
-        instruction: String,
-        /// Byte offset in the instruction data where the error occurred
-        data_offset: usize,
-    },
+    InvalidInstructionData,
 
     /// An account's data contents was invalid
-    InvalidAccountData {
-        /// Index of the invalid account in the account slice
-        account_index: usize,
-    },
+    InvalidAccountData,
 
     /// An account's data was too small
     AccountDataTooSmall,
@@ -265,29 +251,10 @@ impl fmt::Display for InstructionError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             InstructionError::GenericError => f.write_str("generic instruction error"),
-            InstructionError::InvalidArgument { arg_index, expected, actual } => {
-                write!(
-                    f,
-                    "invalid program argument at index {}: expected '{}' , got '{}'",
-                    arg_index,
-                    expected,
-                    actual
-                )
-            }
-            InstructionError::InvalidInstructionData { instruction, data_offset } => {
-                write!(
-                    f,
-                    "invalid instruction data for '{}': error at byte offset {}",
-                    instruction,
-                    data_offset
-                )
-            }
-            InstructionError::InvalidAccountData { account_index } => {
-                write!(
-                    f,
-                    "invalid account data at account index {}",
-                    account_index
-                )
+            InstructionError::InvalidArgument => f.write_str("invalid program argument"),
+            InstructionError::InvalidInstructionData => f.write_str("invalid instruction data"),
+            InstructionError::InvalidAccountData => {
+                f.write_str("invalid account data for instruction")
             }
             InstructionError::AccountDataTooSmall => {
                 f.write_str("account data too small for instruction")
@@ -428,18 +395,9 @@ where
         let error = error.to_u64().unwrap_or(0xbad_c0de);
         match error {
             CUSTOM_ZERO => Self::Custom(0),
-            INVALID_ARGUMENT => Self::InvalidArgument {
-                arg_index: 0,
-                expected: String::new(),
-                actual: String::new(),
-            },
-            INVALID_INSTRUCTION_DATA => Self::InvalidInstructionData {
-                instruction: String::new(),
-                data_offset: 0,
-            },
-            INVALID_ACCOUNT_DATA => Self::InvalidAccountData {
-                account_index: 0,
-            },
+            INVALID_ARGUMENT => Self::InvalidArgument,
+            INVALID_INSTRUCTION_DATA => Self::InvalidInstructionData,
+            INVALID_ACCOUNT_DATA => Self::InvalidAccountData,
             ACCOUNT_DATA_TOO_SMALL => Self::AccountDataTooSmall,
             INSUFFICIENT_FUNDS => Self::InsufficientFunds,
             INCORRECT_PROGRAM_ID => Self::IncorrectProgramId,
@@ -506,66 +464,244 @@ impl From<LamportsError> for InstructionError {
     }
 }
 
-#[cfg(feature = "std")]
-impl InstructionError {
-    /// Given a decoded `InvalidArgument` with placeholders, fill in
-    /// the real index, expected format, and actual value.
-    pub fn with_invalid_arg_context(
-        self,
+#[cfg(all(feature = "std", feature = "detailed-errors"))]
+pub enum ErrorContext {
+    InvalidArgument {
+        instruction_index: usize,
         arg_index: usize,
-        expected: impl Into<String>,
-        actual: impl Into<String>,
-    ) -> Self {
-        match self {
-            InstructionError::InvalidArgument { .. } => InstructionError::InvalidArgument {
-                arg_index,
-                expected: expected.into(),
-                actual: actual.into(),
-            },
-            other => other,
-        }
-    }
-
-    /// Populate the simplified `InvalidInstructionData` fields with real context.
-    pub fn with_invalid_instruction_data_context(
-        self,
-        instruction: impl Into<String>,
-        data_offset: usize,
-    ) -> Self {
-        match self {
-            InstructionError::InvalidInstructionData { .. } => InstructionError::InvalidInstructionData {
-                instruction: instruction.into(),
-                data_offset,
-            },
-            other => other,
-        }
-    }
-
-    /// Populate the simplified `InvalidInstructionData` fields with real context
-    /// and compute `data_offset` from the full data and remaining slice.
-    pub fn invalid_instruction_data_from_slices(
-        instruction: impl Into<String>,
-        full_data: &[u8],
-        remaining: &[u8],
-    ) -> Self {
-        let offset = full_data.len().saturating_sub(remaining.len());
-        InstructionError::InvalidInstructionData {
-            instruction: instruction.into(),
-            data_offset: offset,
-        }
-    }
-
-    /// Populate the `InvalidAccountData` field with real context.
-    pub fn with_invalid_account_data_context(
-        self,
+    },
+    InvalidInstructionData {
+        instruction: String,
+        data_offset:  usize,
+    },
+    InvalidAccountData {
         account_index: usize,
-    ) -> Self {
-        match self {
-            InstructionError::InvalidAccountData { .. } => InstructionError::InvalidAccountData {
-                account_index,
-            },
-            other => other,
-        }
-    }
+    },
+    AccountDataTooSmall {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// Number of bytes required by the instruction
+        required_size: usize,
+        /// Number of bytes actually available in the account
+        actual_size: usize,
+    },
+    InsufficientFunds {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// Number of lamports required by the instruction
+        required_lamports: u64,
+        /// Number of lamports actually available in the account
+        available_lamports: u64,
+    },
+    IncorrectProgramId {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// The program ID the account was expected to have
+        expected_program_id: Pubkey,
+        /// The program ID the account actually had
+        actual_program_id: Pubkey,
+    },
+    MissingRequiredSignature {
+        /// Index of the account that was expected to sign
+        account_index: usize,
+        /// The public key of the missing signer
+        expected_signer: Pubkey,
+    },
+    AccountAlreadyInitialized {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the already-initialized account
+        account_key: Pubkey,
+    },
+    UninitializedAccount {
+        /// Index of the uninitialized account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the uninitialized account
+        account_key: Pubkey,
+    },
+    UnbalancedInstruction {
+        /// Index of the instruction within the transaction
+        instruction_index: usize,
+        /// Total lamports across all accounts before executing the instruction
+        pre_balance: u64,
+        /// Total lamports across all accounts after executing the instruction
+        post_balance: u64,
+    },
+    ModifiedProgramId {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose program ID was modified
+        account_key: Pubkey,
+        /// The program ID the account was originally supposed to have
+        expected_program_id: Pubkey,
+        /// The program ID the account actually had after modification
+        actual_program_id: Pubkey,
+    },
+    ExternalAccountLamportSpend {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose lamports were illegally debited
+        account_key: Pubkey,
+        /// The owner the account was expected to have (i.e., this program’s ID)
+        expected_owner: Pubkey,
+        /// The actual owner of the account
+        actual_owner: Pubkey,
+        /// Number of lamports the program attempted to spend
+        attempted_lamports: u64,
+    },
+    ExternalAccountDataModified {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose data was illegally modified
+        account_key: Pubkey,
+        /// The owner the account was expected to have (i.e., this program’s ID)
+        expected_owner: Pubkey,
+        /// The actual owner of the account
+        actual_owner: Pubkey,
+    },
+    ReadonlyLamportChange {
+        /// Index of the read-only account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose lamports were modified
+        account_key: Pubkey,
+        /// Lamport balance before the instruction
+        pre_lamports: u64,
+        /// Lamport balance after the instruction
+        post_lamports: u64,
+    },
+    ReadonlyDataModified {
+        /// Index of the read-only account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose data was modified
+        account_key: Pubkey,
+        /// Length of the account data before the instruction
+        pre_data_len: usize,
+        /// Length of the account data after the instruction
+        post_data_len: usize,
+    },
+    ExecutableModified {
+        /// Index of the account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose executable flag was modified
+        account_key: Pubkey,
+        /// Executable flag before the instruction
+        pre_executable: bool,
+        /// Executable flag after the instruction
+        post_executable: bool,
+    },
+    RentEpochModified {
+        /// Index of the account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose rent_epoch was modified
+        account_key: Pubkey,
+        /// Rent epoch before the instruction
+        pre_rent_epoch: u64,
+        /// Rent epoch after the instruction
+        post_rent_epoch: u64,
+    },
+    NotEnoughAccountKeys {
+        /// Index of the instruction within the transaction
+        instruction_index: usize,
+        /// Number of account keys the instruction expected
+        expected_account_keys: usize,
+        /// Number of account keys actually provided
+        provided_account_keys: usize,
+    },
+    AccountDataSizeChanged {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose data size was changed
+        account_key: Pubkey,
+        /// Account data length before the instruction
+        pre_data_len: usize,
+        /// Account data length after the instruction
+        post_data_len: usize,
+    },
+    AccountBorrowFailed {
+        /// Index of the account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account that was already borrowed
+        account_key: Pubkey,
+        /// Whether a mutable borrow was requested (`true` for &mut, `false` for &)
+        is_writable: bool,
+    },
+    AccountBorrowOutstanding {
+        /// Index of the account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account with the dangling borrow
+        account_key: Pubkey,
+        /// Number of outstanding borrows left open
+        outstanding_borrows: usize,
+    },
+    DuplicateAccountOutOfSync {
+        /// Index of the first instance of the duplicated account
+        first_account_index: usize,
+        /// Index of the second instance of the duplicated account
+        second_account_index: usize,
+        /// Public key of the duplicated account
+        account_key: Pubkey,
+        /// Account data length after modification in the first instance
+        first_post_data_len: usize,
+        /// Account data length after modification in the second instance
+        second_post_data_len: usize,
+    },
+    Custom(u32),
+    InvalidError,
+    ExecutableDataModified {
+        /// Index of the executable account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose data was modified
+        account_key: Pubkey,
+        /// Length of the account data before the instruction
+        pre_data_len: usize,
+        /// Length of the account data after the instruction
+        post_data_len: usize,
+    },
+    ExecutableLamportChange {
+        /// Index of the executable account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account whose lamports were modified
+        account_key: Pubkey,
+        /// Lamport balance before the instruction
+        pre_lamports: u64,
+        /// Lamport balance after the instruction
+        post_lamports: u64,
+    },
+    ExecutableAccountNotRentExempt {
+        /// Index of the executable account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account that isn’t rent exempt
+        account_key: Pubkey,
+        /// Current lamport balance of the account
+        account_lamports: u64,
+        /// Minimum lamport balance required for rent exemption
+        required_rent_exempt_balance: u64,
+    },
+    UnsupportedProgramId {
+        /// Index of the account containing the program ID
+        account_index: usize,
+        /// The unrecognized program ID that was provided
+        program_id: Pubkey,
+    },
+    IllegalOwner {
+        /// Index of the offending account in the instruction’s account list
+        account_index: usize,
+        /// Public key of the account with the illegal owner
+        account_key: Pubkey,
+        /// The owner the account was expected to have
+        expected_owner: Pubkey,
+        /// The actual owner of the account
+        actual_owner: Pubkey,
+    },
+}
 
+pub struct DetailedInstructionError {
+    pub error:   InstructionError,
+    pub context: Option<ErrorContext>,
+}
+
+impl From<InstructionError> for DetailedInstructionError {
+    fn from(error: InstructionError) -> Self {
+        Self { error, context: None }
+    }
 }
